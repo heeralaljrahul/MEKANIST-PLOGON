@@ -305,40 +305,53 @@ public class MachinistWindow : Window, IDisposable
                 // GCD Abilities
                 ImGui.TextColored(new Vector4(1.0f, 0.6f, 0.2f, 1.0f), "Burst GCDs:");
 
-                changed |= DrawToggle("Drill", ref settings.UseDrill);
+                var useDrill = settings.UseDrill;
+                if (ImGui.Checkbox("Drill", ref useDrill)) { settings.UseDrill = useDrill; changed = true; }
                 ImGui.SameLine();
-                changed |= DrawToggle("Air Anchor", ref settings.UseAirAnchor);
+                var useAirAnchor = settings.UseAirAnchor;
+                if (ImGui.Checkbox("Air Anchor", ref useAirAnchor)) { settings.UseAirAnchor = useAirAnchor; changed = true; }
                 ImGui.SameLine();
-                changed |= DrawToggle("Chain Saw", ref settings.UseChainSaw);
+                var useChainSaw = settings.UseChainSaw;
+                if (ImGui.Checkbox("Chain Saw", ref useChainSaw)) { settings.UseChainSaw = useChainSaw; changed = true; }
 
-                changed |= DrawToggle("Excavator", ref settings.UseExcavator);
+                var useExcavator = settings.UseExcavator;
+                if (ImGui.Checkbox("Excavator", ref useExcavator)) { settings.UseExcavator = useExcavator; changed = true; }
                 ImGui.SameLine();
-                changed |= DrawToggle("Full Metal Field", ref settings.UseFullMetalField);
+                var useFullMetalField = settings.UseFullMetalField;
+                if (ImGui.Checkbox("Full Metal Field", ref useFullMetalField)) { settings.UseFullMetalField = useFullMetalField; changed = true; }
 
                 ImGuiHelpers.ScaledDummy(5.0f);
 
                 // oGCD Abilities
                 ImGui.TextColored(new Vector4(0.6f, 0.9f, 0.6f, 1.0f), "oGCDs:");
 
-                changed |= DrawToggle("Reassemble", ref settings.UseReassemble);
+                var useReassemble = settings.UseReassemble;
+                if (ImGui.Checkbox("Reassemble", ref useReassemble)) { settings.UseReassemble = useReassemble; changed = true; }
                 ImGui.SameLine();
-                changed |= DrawToggle("Barrel Stabilizer", ref settings.UseBarrelStabilizer);
+                var useBarrelStabilizer = settings.UseBarrelStabilizer;
+                if (ImGui.Checkbox("Barrel Stabilizer", ref useBarrelStabilizer)) { settings.UseBarrelStabilizer = useBarrelStabilizer; changed = true; }
 
-                changed |= DrawToggle("Hypercharge", ref settings.UseHypercharge);
+                var useHypercharge = settings.UseHypercharge;
+                if (ImGui.Checkbox("Hypercharge", ref useHypercharge)) { settings.UseHypercharge = useHypercharge; changed = true; }
                 ImGui.SameLine();
-                changed |= DrawToggle("Heat Blast", ref settings.UseHeatBlast);
+                var useHeatBlast = settings.UseHeatBlast;
+                if (ImGui.Checkbox("Heat Blast", ref useHeatBlast)) { settings.UseHeatBlast = useHeatBlast; changed = true; }
 
-                changed |= DrawToggle("Wildfire", ref settings.UseWildfire);
+                var useWildfire = settings.UseWildfire;
+                if (ImGui.Checkbox("Wildfire", ref useWildfire)) { settings.UseWildfire = useWildfire; changed = true; }
                 ImGui.SameLine();
-                changed |= DrawToggle("Gauss Round", ref settings.UseGaussRound);
+                var useGaussRound = settings.UseGaussRound;
+                if (ImGui.Checkbox("Gauss Round", ref useGaussRound)) { settings.UseGaussRound = useGaussRound; changed = true; }
                 ImGui.SameLine();
-                changed |= DrawToggle("Ricochet", ref settings.UseRicochet);
+                var useRicochet = settings.UseRicochet;
+                if (ImGui.Checkbox("Ricochet", ref useRicochet)) { settings.UseRicochet = useRicochet; changed = true; }
 
                 ImGuiHelpers.ScaledDummy(5.0f);
 
                 // Basic
                 ImGui.TextColored(new Vector4(0.4f, 0.7f, 1.0f, 1.0f), "Basic:");
-                changed |= DrawToggle("Basic Combo (1-2-3)", ref settings.UseBasicCombo);
+                var useBasicCombo = settings.UseBasicCombo;
+                if (ImGui.Checkbox("Basic Combo (1-2-3)", ref useBasicCombo)) { settings.UseBasicCombo = useBasicCombo; changed = true; }
 
                 if (changed)
                 {
@@ -376,12 +389,6 @@ public class MachinistWindow : Window, IDisposable
             showAbilitySettings = false;
             ImGui.PopStyleColor();
         }
-    }
-
-    private static bool DrawToggle(string label, ref bool value)
-    {
-        var changed = ImGui.Checkbox(label, ref value);
-        return changed;
     }
 
     private void DrawTargetSection()
@@ -434,7 +441,7 @@ public class MachinistWindow : Window, IDisposable
     {
         ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.8f, 1.0f), "Nearby Enemies (click to target):");
 
-        var localPlayer = Plugin.ObjectTable.FirstOrDefault(o => o is IPlayerCharacter);
+        var localPlayer = Plugin.ClientState.LocalPlayer;
         if (localPlayer == null)
         {
             ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "  Player not loaded");
@@ -581,7 +588,7 @@ public class MachinistWindow : Window, IDisposable
 
     private void TargetNearestEnemy()
     {
-        var localPlayer = Plugin.ObjectTable.FirstOrDefault(o => o is IPlayerCharacter);
+        var localPlayer = Plugin.ClientState.LocalPlayer;
         if (localPlayer == null)
         {
             lastActionResult = "Error: Player not loaded";
