@@ -1,9 +1,13 @@
 using System;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace SamplePlugin.Windows;
 
@@ -12,42 +16,32 @@ public class MachinistWindow : Window, IDisposable
     private readonly string machinistImagePath;
     private readonly Plugin plugin;
 
-    // Machinist combo ability information
-    private static readonly ComboAbility[] BasicCombo =
-    [
-        new("Heated Split Shot", "1", "Delivers an attack with a potency of 200. Additional Effect: Increases Heat Gauge by 5"),
-        new("Heated Slug Shot", "2", "Delivers an attack with a potency of 120. Combo Potency: 320. Combo Bonus: Increases Heat Gauge by 5"),
-        new("Heated Clean Shot", "3", "Delivers an attack with a potency of 120. Combo Potency: 400. Combo Bonus: Increases Heat Gauge by 5, Battery Gauge by 10")
-    ];
+    // Machinist Action IDs
+    private const uint HeatedSplitShot = 7411;
+    private const uint HeatedSlugShot = 7412;
+    private const uint HeatedCleanShot = 7413;
+    private const uint Drill = 16498;
+    private const uint AirAnchor = 16500;
+    private const uint ChainSaw = 25788;
+    private const uint GaussRound = 2874;
+    private const uint Ricochet = 2890;
+    private const uint Hypercharge = 17209;
+    private const uint HeatBlast = 7410;
+    private const uint Wildfire = 2878;
+    private const uint Reassemble = 2876;
+    private const uint BarrelStabilizer = 7414;
 
-    private static readonly ComboAbility[] BurstAbilities =
-    [
-        new("Reassemble", "oGCD", "Guarantees critical direct hit on next weaponskill. Recast: 55s"),
-        new("Drill", "GCD", "Delivers an attack with a potency of 600. Recast: 20s"),
-        new("Air Anchor", "GCD", "Delivers an attack with a potency of 600. Battery +20. Recast: 40s"),
-        new("Chain Saw", "GCD", "Delivers an attack with a potency of 600. Battery +20. Recast: 60s")
-    ];
-
-    private static readonly ComboAbility[] HyperchargeAbilities =
-    [
-        new("Barrel Stabilizer", "oGCD", "Generates 50 Heat. Recast: 120s"),
-        new("Hypercharge", "oGCD", "Consume 50 Heat. Enables Heat Blast for 8s"),
-        new("Heat Blast", "GCD", "Potency 200. Recast: 1.5s. Reduces Gauss Round/Ricochet cooldown by 15s"),
-        new("Wildfire", "oGCD", "Marks target. Explodes dealing 240 potency per weaponskill (max 6)")
-    ];
-
-    private static readonly ComboAbility[] OGCDAbilities =
-    [
-        new("Gauss Round", "oGCD", "Delivers an attack with potency of 130. 3 charges"),
-        new("Ricochet", "oGCD", "Delivers an attack with potency of 130 to target and nearby enemies. 3 charges")
-    ];
+    // Combo state tracking
+    private int currentComboStep;
+    private string lastActionResult = "";
+    private DateTime lastActionTime = DateTime.MinValue;
 
     public MachinistWindow(Plugin plugin, string machinistImagePath)
         : base("Machinist Job Interface##MachinistWindow", ImGuiWindowFlags.NoScrollbar)
     {
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(450, 550),
+            MinimumSize = new Vector2(500, 650),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
         };
 
@@ -69,35 +63,29 @@ public class MachinistWindow : Window, IDisposable
         {
             if (child.Success)
             {
-                // Basic Combo Section
-                DrawSection("Basic Combo (1-2-3)", BasicCombo, new Vector4(0.4f, 0.7f, 1.0f, 1.0f));
+                // Target Section
+                DrawTargetSection();
 
                 ImGuiHelpers.ScaledDummy(10.0f);
 
-                // Burst Abilities Section
-                DrawSection("Burst Abilities", BurstAbilities, new Vector4(1.0f, 0.6f, 0.2f, 1.0f));
+                // Action Buttons Section
+                DrawActionButtons();
 
                 ImGuiHelpers.ScaledDummy(10.0f);
 
-                // Hypercharge Window Section
-                DrawSection("Hypercharge Window", HyperchargeAbilities, new Vector4(1.0f, 0.3f, 0.3f, 1.0f));
+                // Combo Info Section
+                DrawComboInfo();
 
                 ImGuiHelpers.ScaledDummy(10.0f);
 
-                // oGCD Weaving Section
-                DrawSection("oGCD Weaving", OGCDAbilities, new Vector4(0.6f, 0.9f, 0.6f, 1.0f));
-
-                ImGuiHelpers.ScaledDummy(15.0f);
-
-                // Tips section
-                DrawTipsSection();
+                // Status/Result display
+                DrawStatusSection();
             }
         }
     }
 
     private void DrawHeader()
     {
-        // Center the header content
         var machinistImage = Plugin.TextureProvider.GetFromFile(machinistImagePath).GetWrapOrDefault();
 
         // Title
@@ -109,7 +97,7 @@ public class MachinistWindow : Window, IDisposable
         ImGui.PopStyleColor();
 
         ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.7f, 0.7f, 0.7f, 1.0f));
-        var subtitle = "Ranged Physical DPS";
+        var subtitle = "Ranged Physical DPS - Action Controller";
         var subtitleSize = ImGui.CalcTextSize(subtitle);
         ImGui.SetCursorPosX((ImGui.GetWindowWidth() - subtitleSize.X) / 2);
         ImGui.Text(subtitle);
@@ -120,84 +108,415 @@ public class MachinistWindow : Window, IDisposable
         // Display the machinist image centered
         if (machinistImage != null)
         {
-            var imageSize = new Vector2(100, 100);
+            var imageSize = new Vector2(80, 80);
             ImGui.SetCursorPosX((ImGui.GetWindowWidth() - imageSize.X) / 2);
             ImGui.Image(machinistImage.Handle, imageSize);
         }
-        else
-        {
-            ImGui.TextColored(new Vector4(1.0f, 0.5f, 0.5f, 1.0f), "Machinist image not found.");
-        }
     }
 
-    private static void DrawSection(string sectionTitle, ComboAbility[] abilities, Vector4 titleColor)
+    private void DrawTargetSection()
     {
-        ImGui.PushStyleColor(ImGuiCol.Text, titleColor);
-        ImGui.Text(sectionTitle);
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.4f, 0.4f, 1.0f));
+        ImGui.Text("Target Management");
         ImGui.PopStyleColor();
-
         ImGui.Separator();
 
         using (ImRaii.PushIndent(10f))
         {
-            foreach (var ability in abilities)
+            // Current target display
+            var currentTarget = Plugin.TargetManager.Target;
+            if (currentTarget != null)
             {
-                DrawAbility(ability);
+                ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), $"Current Target: {currentTarget.Name}");
+                if (currentTarget is IBattleChara battleChara)
+                {
+                    var hpPercent = battleChara.MaxHp > 0 ? (float)battleChara.CurrentHp / battleChara.MaxHp * 100 : 0;
+                    ImGui.SameLine();
+                    ImGui.TextColored(new Vector4(1.0f, 0.8f, 0.2f, 1.0f), $"(HP: {hpPercent:F1}%%)");
+                }
+            }
+            else
+            {
+                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No target selected");
+            }
+
+            ImGuiHelpers.ScaledDummy(5.0f);
+
+            // Target buttons
+            if (ImGui.Button("Target Nearest Enemy", new Vector2(180, 30)))
+            {
+                TargetNearestEnemy();
+            }
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Clear Target", new Vector2(120, 30)))
+            {
+                Plugin.TargetManager.Target = null;
+                lastActionResult = "Target cleared";
+            }
+
+            ImGuiHelpers.ScaledDummy(5.0f);
+
+            // List nearby enemies
+            DrawNearbyEnemies();
+        }
+    }
+
+    private void DrawNearbyEnemies()
+    {
+        ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.8f, 1.0f), "Nearby Enemies (click to target):");
+
+        var localPlayer = Plugin.ObjectTable.FirstOrDefault(o => o is IPlayerCharacter);
+        if (localPlayer == null)
+        {
+            ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "  Player not loaded");
+            return;
+        }
+
+        var enemies = Plugin.ObjectTable
+            .OfType<IBattleNpc>()
+            .Where(o => o.BattleNpcKind == BattleNpcSubKind.Enemy && IsTargetable(o))
+            .OrderBy(o => Vector3.Distance(localPlayer.Position, o.Position))
+            .Take(5)
+            .ToList();
+
+        if (enemies.Count == 0)
+        {
+            ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "  No enemies nearby");
+            return;
+        }
+
+        using (ImRaii.PushIndent(10f))
+        {
+            foreach (var enemy in enemies)
+            {
+                var distance = Vector3.Distance(localPlayer.Position, enemy.Position);
+                var hpPercent = enemy.MaxHp > 0 ? (float)enemy.CurrentHp / enemy.MaxHp * 100 : 0;
+                var label = $"{enemy.Name} - {distance:F1}y - HP: {hpPercent:F0}%%";
+
+                if (ImGui.Selectable(label, Plugin.TargetManager.Target?.GameObjectId == enemy.GameObjectId))
+                {
+                    Plugin.TargetManager.Target = enemy;
+                    lastActionResult = $"Targeted: {enemy.Name}";
+                }
             }
         }
     }
 
-    private static void DrawAbility(ComboAbility ability)
+    private void DrawActionButtons()
     {
-        // Ability name with type badge
-        var badgeColor = ability.Type switch
-        {
-            "1" or "2" or "3" => new Vector4(0.3f, 0.6f, 1.0f, 1.0f),
-            "GCD" => new Vector4(0.9f, 0.7f, 0.2f, 1.0f),
-            "oGCD" => new Vector4(0.5f, 0.9f, 0.5f, 1.0f),
-            _ => new Vector4(0.7f, 0.7f, 0.7f, 1.0f)
-        };
-
-        ImGui.TextColored(badgeColor, $"[{ability.Type}]");
-        ImGui.SameLine();
-        ImGui.TextColored(new Vector4(1.0f, 1.0f, 1.0f, 1.0f), ability.Name);
-
-        using (ImRaii.PushIndent(25f))
-        {
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.6f, 0.6f, 1.0f));
-            ImGui.TextWrapped(ability.Description);
-            ImGui.PopStyleColor();
-        }
-
-        ImGuiHelpers.ScaledDummy(3.0f);
-    }
-
-    private static void DrawTipsSection()
-    {
-        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.9f, 0.9f, 0.3f, 1.0f));
-        ImGui.Text("Quick Tips");
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.4f, 0.7f, 1.0f, 1.0f));
+        ImGui.Text("Basic Combo Actions");
         ImGui.PopStyleColor();
         ImGui.Separator();
 
         using (ImRaii.PushIndent(10f))
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.8f, 0.8f, 0.8f, 1.0f));
+            // Combo buttons with visual feedback
+            var buttonSize = new Vector2(150, 40);
 
-            ImGui.Bullet();
-            ImGui.TextWrapped("Use Reassemble before Drill, Air Anchor, or Chain Saw for guaranteed crits");
+            // Step 1: Heated Split Shot
+            var step1Color = currentComboStep == 0
+                ? new Vector4(0.2f, 0.6f, 0.2f, 1.0f)
+                : new Vector4(0.3f, 0.3f, 0.3f, 1.0f);
+            ImGui.PushStyleColor(ImGuiCol.Button, step1Color);
+            if (ImGui.Button("1: Heated Split Shot", buttonSize))
+            {
+                ExecuteAction(HeatedSplitShot, "Heated Split Shot");
+                currentComboStep = 1;
+            }
+            ImGui.PopStyleColor();
 
-            ImGui.Bullet();
-            ImGui.TextWrapped("During Hypercharge, weave one oGCD between each Heat Blast");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 220\nGenerates 5 Heat");
 
-            ImGui.Bullet();
-            ImGui.TextWrapped("Align Wildfire with Hypercharge for maximum damage");
+            ImGui.SameLine();
 
-            ImGui.Bullet();
-            ImGui.TextWrapped("Keep your GCD rolling - always be casting!");
+            // Step 2: Heated Slug Shot
+            var step2Color = currentComboStep == 1
+                ? new Vector4(0.2f, 0.6f, 0.2f, 1.0f)
+                : new Vector4(0.3f, 0.3f, 0.3f, 1.0f);
+            ImGui.PushStyleColor(ImGuiCol.Button, step2Color);
+            if (ImGui.Button("2: Heated Slug Shot", buttonSize))
+            {
+                ExecuteAction(HeatedSlugShot, "Heated Slug Shot");
+                currentComboStep = 2;
+            }
+            ImGui.PopStyleColor();
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 140 (Combo: 340)\nGenerates 5 Heat");
+
+            ImGui.SameLine();
+
+            // Step 3: Heated Clean Shot
+            var step3Color = currentComboStep == 2
+                ? new Vector4(0.2f, 0.6f, 0.2f, 1.0f)
+                : new Vector4(0.3f, 0.3f, 0.3f, 1.0f);
+            ImGui.PushStyleColor(ImGuiCol.Button, step3Color);
+            if (ImGui.Button("3: Heated Clean Shot", buttonSize))
+            {
+                ExecuteAction(HeatedCleanShot, "Heated Clean Shot");
+                currentComboStep = 0;
+            }
+            ImGui.PopStyleColor();
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 160 (Combo: 440)\nGenerates 5 Heat + 10 Battery");
+        }
+
+        ImGuiHelpers.ScaledDummy(10.0f);
+
+        // Burst abilities
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.6f, 0.2f, 1.0f));
+        ImGui.Text("Burst Abilities");
+        ImGui.PopStyleColor();
+        ImGui.Separator();
+
+        using (ImRaii.PushIndent(10f))
+        {
+            var burstSize = new Vector2(110, 35);
+
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.6f, 0.3f, 0.1f, 1.0f));
+
+            if (ImGui.Button("Reassemble", burstSize))
+                ExecuteAction(Reassemble, "Reassemble");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Guarantees critical direct hit\nRecast: 55s");
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Drill", burstSize))
+                ExecuteAction(Drill, "Drill");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 600\nRecast: 20s");
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Air Anchor", burstSize))
+                ExecuteAction(AirAnchor, "Air Anchor");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 600\nBattery +20\nRecast: 40s");
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Chain Saw", burstSize))
+                ExecuteAction(ChainSaw, "Chain Saw");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 600\nBattery +20\nRecast: 60s");
+
+            ImGui.PopStyleColor();
+        }
+
+        ImGuiHelpers.ScaledDummy(10.0f);
+
+        // Hypercharge abilities
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.3f, 0.3f, 1.0f));
+        ImGui.Text("Hypercharge Window");
+        ImGui.PopStyleColor();
+        ImGui.Separator();
+
+        using (ImRaii.PushIndent(10f))
+        {
+            var hyperSize = new Vector2(130, 35);
+
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.5f, 0.1f, 0.1f, 1.0f));
+
+            if (ImGui.Button("Barrel Stabilizer", hyperSize))
+                ExecuteAction(BarrelStabilizer, "Barrel Stabilizer");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Generates 50 Heat\nRecast: 120s");
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Hypercharge", hyperSize))
+                ExecuteAction(Hypercharge, "Hypercharge");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Consumes 50 Heat\nEnables Heat Blast for 8s");
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Heat Blast", hyperSize))
+                ExecuteAction(HeatBlast, "Heat Blast");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 200\nRecast: 1.5s\nReduces oGCD cooldowns by 15s");
+
+            if (ImGui.Button("Wildfire", hyperSize))
+                ExecuteAction(Wildfire, "Wildfire");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Marks target\n240 potency per weaponskill (max 6)");
+
+            ImGui.PopStyleColor();
+        }
+
+        ImGuiHelpers.ScaledDummy(10.0f);
+
+        // oGCD abilities
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.9f, 0.6f, 1.0f));
+        ImGui.Text("oGCD Weaving");
+        ImGui.PopStyleColor();
+        ImGui.Separator();
+
+        using (ImRaii.PushIndent(10f))
+        {
+            var ogcdSize = new Vector2(120, 35);
+
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.1f, 0.4f, 0.1f, 1.0f));
+
+            if (ImGui.Button("Gauss Round", ogcdSize))
+                ExecuteAction(GaussRound, "Gauss Round");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 130\n3 charges");
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Ricochet", ogcdSize))
+                ExecuteAction(Ricochet, "Ricochet");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Potency: 130 (AoE)\n3 charges");
 
             ImGui.PopStyleColor();
         }
     }
 
-    private record ComboAbility(string Name, string Type, string Description);
+    private void DrawComboInfo()
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.9f, 0.9f, 0.3f, 1.0f));
+        ImGui.Text("Combo State");
+        ImGui.PopStyleColor();
+        ImGui.Separator();
+
+        using (ImRaii.PushIndent(10f))
+        {
+            var comboText = currentComboStep switch
+            {
+                0 => "Ready for: Heated Split Shot (Step 1)",
+                1 => "Ready for: Heated Slug Shot (Step 2)",
+                2 => "Ready for: Heated Clean Shot (Step 3)",
+                _ => "Unknown state"
+            };
+
+            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.8f, 1.0f), comboText);
+
+            // Visual combo indicator
+            ImGui.Text("Combo Progress: ");
+            ImGui.SameLine();
+
+            for (var i = 0; i < 3; i++)
+            {
+                var color = i < currentComboStep
+                    ? new Vector4(0.2f, 0.8f, 0.2f, 1.0f)
+                    : i == currentComboStep
+                        ? new Vector4(1.0f, 0.8f, 0.0f, 1.0f)
+                        : new Vector4(0.3f, 0.3f, 0.3f, 1.0f);
+
+                ImGui.TextColored(color, i < currentComboStep ? "[*]" : i == currentComboStep ? "[>]" : "[ ]");
+                if (i < 2)
+                    ImGui.SameLine();
+            }
+
+            if (ImGui.Button("Reset Combo"))
+            {
+                currentComboStep = 0;
+                lastActionResult = "Combo reset";
+            }
+        }
+    }
+
+    private void DrawStatusSection()
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.7f, 0.7f, 1.0f, 1.0f));
+        ImGui.Text("Action Log");
+        ImGui.PopStyleColor();
+        ImGui.Separator();
+
+        using (ImRaii.PushIndent(10f))
+        {
+            if (!string.IsNullOrEmpty(lastActionResult))
+            {
+                var timeSince = DateTime.Now - lastActionTime;
+                var fadeAlpha = Math.Max(0.3f, 1.0f - (float)timeSince.TotalSeconds / 5.0f);
+                ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.8f, fadeAlpha), $"> {lastActionResult}");
+            }
+            else
+            {
+                ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "No actions performed yet");
+            }
+        }
+    }
+
+    private void TargetNearestEnemy()
+    {
+        var localPlayer = Plugin.ObjectTable.FirstOrDefault(o => o is IPlayerCharacter);
+        if (localPlayer == null)
+        {
+            lastActionResult = "Error: Player not loaded";
+            lastActionTime = DateTime.Now;
+            return;
+        }
+
+        var nearestEnemy = Plugin.ObjectTable
+            .OfType<IBattleNpc>()
+            .Where(o => o.BattleNpcKind == BattleNpcSubKind.Enemy && IsTargetable(o))
+            .OrderBy(o => Vector3.Distance(localPlayer.Position, o.Position))
+            .FirstOrDefault();
+
+        if (nearestEnemy != null)
+        {
+            Plugin.TargetManager.Target = nearestEnemy;
+            var distance = Vector3.Distance(localPlayer.Position, nearestEnemy.Position);
+            lastActionResult = $"Targeted: {nearestEnemy.Name} ({distance:F1}y away)";
+        }
+        else
+        {
+            lastActionResult = "No enemies found nearby";
+        }
+
+        lastActionTime = DateTime.Now;
+    }
+
+    private static bool IsTargetable(IGameObject obj)
+    {
+        return obj.IsTargetable && !obj.IsDead;
+    }
+
+    private unsafe void ExecuteAction(uint actionId, string actionName)
+    {
+        var target = Plugin.TargetManager.Target;
+        var targetId = target?.GameObjectId ?? 0xE0000000;
+
+        // Use FFXIVClientStructs to execute the action
+        var actionManager = ActionManager.Instance();
+        if (actionManager == null)
+        {
+            lastActionResult = $"Error: ActionManager not available";
+            lastActionTime = DateTime.Now;
+            return;
+        }
+
+        // Check if action is available
+        var actionStatus = actionManager->GetActionStatus(ActionType.Action, actionId);
+        if (actionStatus != 0)
+        {
+            lastActionResult = $"{actionName}: Not ready (status: {actionStatus})";
+            lastActionTime = DateTime.Now;
+            return;
+        }
+
+        // Execute the action
+        var result = actionManager->UseAction(ActionType.Action, actionId, targetId);
+
+        if (result)
+        {
+            lastActionResult = $"Used: {actionName}" + (target != null ? $" on {target.Name}" : "");
+        }
+        else
+        {
+            lastActionResult = $"{actionName}: Failed to execute";
+        }
+
+        lastActionTime = DateTime.Now;
+        Plugin.Log.Information($"Action {actionName} (ID: {actionId}) - Result: {result}");
+    }
 }
