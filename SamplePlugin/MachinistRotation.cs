@@ -28,6 +28,12 @@ public class MachinistRotation : IDisposable
     public const uint Reassemble = 2876;
     public const uint BarrelStabilizer = 7414;
 
+    // Heat gauge constants
+    private const int HeatPerCombo = 5;        // Heat gained per combo GCD
+    private const int HyperchargeCost = 50;    // Heat cost for Hypercharge
+    private const int MaxHeat = 100;           // Maximum heat
+    private const int WildfireHeatReserve = 50; // Always save this much for Wildfire
+
     // Reference to settings
     private MachinistSettings Settings => Plugin.PluginInterface.GetPluginConfig() is Configuration config
         ? config.Machinist
@@ -42,15 +48,22 @@ public class MachinistRotation : IDisposable
     public string NextAction { get; private set; } = "";
     public string RotationStatus { get; private set; } = "Idle";
 
+    // Heat tracking (simulated since we can't read game gauge directly without job gauge struct)
+    public int CurrentHeat { get; private set; }
+    public int CurrentBattery { get; private set; }
+
     // Timing
     private DateTime lastActionTime = DateTime.MinValue;
     private DateTime lastGcdTime = DateTime.MinValue;
+    private DateTime lastWildfireTime = DateTime.MinValue;
     private const float GcdLockout = 0.6f;
     private const float OGcdLockout = 0.6f;
+    private const float WildfireCooldown = 120f; // 2 minutes
     private bool isInHypercharge;
     private int hyperchargeStacks;
 
-    // Opener sequence (standard level 100 opener) - filtered by settings at runtime
+    // Opener sequence (standard level 100 opener) - proper alignment:
+    // Air Anchor → Drill → Barrel Stabilizer → Chain Saw → Excavator → Full Metal Field
     private readonly List<(uint ActionId, bool IsOGcd, string Name)> openerSequence =
     [
         (Reassemble, true, "Reassemble"),
@@ -68,6 +81,8 @@ public class MachinistRotation : IDisposable
         (Ricochet, true, "Ricochet"),
         (Reassemble, true, "Reassemble"),
         (ChainSaw, false, "Chain Saw"),
+        (Excavator, false, "Excavator"),
+        (FullMetalField, false, "Full Metal Field"),
         (GaussRound, true, "Gauss Round"),
         (Ricochet, true, "Ricochet"),
         (Hypercharge, true, "Hypercharge"),
@@ -227,10 +242,16 @@ public class MachinistRotation : IDisposable
             if (!isOGcd)
                 lastGcdTime = DateTime.Now;
 
+            // Track heat changes
+            UpdateHeatFromAction(actionId);
+
+            if (actionId == Wildfire)
+                lastWildfireTime = DateTime.Now;
+
             OpenerStep++;
             RotationStatus = $"Opener {OpenerStep}/{openerSequence.Count}";
             UpdateComboState(actionId);
-            Plugin.Log.Information($"Opener step {OpenerStep}: {actionName}");
+            Plugin.Log.Information($"Opener step {OpenerStep}: {actionName} (Heat: {CurrentHeat})");
         }
     }
 
@@ -240,7 +261,7 @@ public class MachinistRotation : IDisposable
         if (actionManager == null)
             return;
 
-        RotationStatus = "Running";
+        RotationStatus = $"Running (Heat: {CurrentHeat})";
 
         var timeSinceLastGcd = (float)(DateTime.Now - lastGcdTime).TotalSeconds;
         var timeSinceLastAction = (float)(DateTime.Now - lastActionTime).TotalSeconds;
@@ -267,7 +288,7 @@ public class MachinistRotation : IDisposable
             }
         }
 
-        // Priority: Burst GCDs > Combo GCDs
+        // Priority: Burst GCDs > Combo GCDs (proper alignment)
         if (TryUseBurstGcd(actionManager, targetId))
             return;
 
@@ -277,29 +298,70 @@ public class MachinistRotation : IDisposable
 
     private unsafe bool TryUseOGcd(ActionManager* actionManager, ulong targetId)
     {
-        // Barrel Stabilizer
+        // Check if Wildfire is coming up soon (within 15 seconds)
+        var timeSinceWildfire = (float)(DateTime.Now - lastWildfireTime).TotalSeconds;
+        var wildfireComingSoon = timeSinceWildfire >= (WildfireCooldown - 15f) && timeSinceWildfire < WildfireCooldown;
+        var wildfireReady = Settings.UseWildfire && IsActionReady(actionManager, Wildfire);
+
+        // Barrel Stabilizer - use on cooldown (gives free Hypercharge)
         if (Settings.UseBarrelStabilizer && IsActionReady(actionManager, BarrelStabilizer))
         {
             if (TryUseAction(actionManager, BarrelStabilizer, targetId, "Barrel Stabilizer", true))
-                return true;
-        }
-
-        // Hypercharge
-        if (Settings.UseHypercharge && !isInHypercharge && IsActionReady(actionManager, Hypercharge))
-        {
-            if (TryUseAction(actionManager, Hypercharge, targetId, "Hypercharge", true))
             {
-                isInHypercharge = true;
-                hyperchargeStacks = 5;
+                CurrentHeat += 50; // Barrel Stabilizer grants 50 heat
+                if (CurrentHeat > MaxHeat) CurrentHeat = MaxHeat;
                 return true;
             }
         }
 
-        // Wildfire during Hypercharge
+        // CRITICAL: Check if we need to use Hypercharge to prevent overcap
+        // Rule: Never let heat reach 100, but always save 50 for Wildfire
+        var shouldHypercharge = false;
+
+        if (Settings.UseHypercharge && !isInHypercharge && IsActionReady(actionManager, Hypercharge))
+        {
+            // If heat is at max (100), we MUST use Hypercharge to prevent overcap
+            if (CurrentHeat >= MaxHeat)
+            {
+                shouldHypercharge = true;
+                Plugin.Log.Information("Using Hypercharge to prevent heat overcap!");
+            }
+            // If Wildfire is ready or coming soon, use Hypercharge with it
+            else if (wildfireReady && CurrentHeat >= HyperchargeCost)
+            {
+                shouldHypercharge = true;
+            }
+            // Otherwise, use Hypercharge if we have enough heat AND won't need it for Wildfire
+            else if (CurrentHeat >= HyperchargeCost && !wildfireComingSoon)
+            {
+                // Only use if we'll still have 50 heat after for Wildfire reserve
+                // Or if we're at risk of overcapping (heat >= 95 and will get 5 more from combo)
+                if (CurrentHeat >= 95 || (CurrentHeat >= HyperchargeCost && !wildfireComingSoon))
+                {
+                    shouldHypercharge = true;
+                }
+            }
+
+            if (shouldHypercharge)
+            {
+                if (TryUseAction(actionManager, Hypercharge, targetId, "Hypercharge", true))
+                {
+                    isInHypercharge = true;
+                    hyperchargeStacks = 5;
+                    CurrentHeat -= HyperchargeCost;
+                    return true;
+                }
+            }
+        }
+
+        // Wildfire during Hypercharge (best timing)
         if (Settings.UseWildfire && isInHypercharge && IsActionReady(actionManager, Wildfire))
         {
             if (TryUseAction(actionManager, Wildfire, targetId, "Wildfire", true))
+            {
+                lastWildfireTime = DateTime.Now;
                 return true;
+            }
         }
 
         // Gauss Round / Double Check
@@ -339,37 +401,47 @@ public class MachinistRotation : IDisposable
     {
         var hasReassemble = Settings.UseReassemble && IsActionReady(actionManager, Reassemble);
 
+        // Proper tool priority: Air Anchor → Drill → Chain Saw → Excavator → Full Metal Field
+
+        // Air Anchor (highest priority)
+        if (Settings.UseAirAnchor && IsActionReady(actionManager, AirAnchor))
+        {
+            if (hasReassemble)
+                TryUseAction(actionManager, Reassemble, targetId, "Reassemble", true);
+
+            if (TryUseAction(actionManager, AirAnchor, targetId, "Air Anchor", false))
+            {
+                CurrentBattery += 20; // Air Anchor grants battery
+                return true;
+            }
+        }
+
         // Drill
         if (Settings.UseDrill && IsActionReady(actionManager, Drill))
         {
-            if (hasReassemble)
+            if (hasReassemble && !(Settings.UseAirAnchor && IsActionReady(actionManager, AirAnchor)))
                 TryUseAction(actionManager, Reassemble, targetId, "Reassemble", true);
 
             if (TryUseAction(actionManager, Drill, targetId, "Drill", false))
                 return true;
         }
 
-        // Air Anchor
-        if (Settings.UseAirAnchor && IsActionReady(actionManager, AirAnchor))
-        {
-            if (hasReassemble && !(Settings.UseDrill && IsActionReady(actionManager, Drill)))
-                TryUseAction(actionManager, Reassemble, targetId, "Reassemble", true);
-
-            if (TryUseAction(actionManager, AirAnchor, targetId, "Air Anchor", false))
-                return true;
-        }
-
         // Chain Saw
         if (Settings.UseChainSaw && IsActionReady(actionManager, ChainSaw))
         {
-            if (hasReassemble && !(Settings.UseDrill && IsActionReady(actionManager, Drill)) && !(Settings.UseAirAnchor && IsActionReady(actionManager, AirAnchor)))
+            if (hasReassemble &&
+                !(Settings.UseAirAnchor && IsActionReady(actionManager, AirAnchor)) &&
+                !(Settings.UseDrill && IsActionReady(actionManager, Drill)))
                 TryUseAction(actionManager, Reassemble, targetId, "Reassemble", true);
 
             if (TryUseAction(actionManager, ChainSaw, targetId, "Chain Saw", false))
+            {
+                CurrentBattery += 20; // Chain Saw grants battery
                 return true;
+            }
         }
 
-        // Excavator
+        // Excavator (follows Chain Saw)
         if (Settings.UseExcavator && IsActionReady(actionManager, Excavator))
         {
             if (TryUseAction(actionManager, Excavator, targetId, "Excavator", false))
@@ -399,13 +471,26 @@ public class MachinistRotation : IDisposable
         if (TryUseAction(actionManager, nextComboAction.Item1, targetId, nextComboAction.Item2, false))
         {
             UpdateComboState(nextComboAction.Item1);
+            // Combo actions generate heat
+            CurrentHeat += HeatPerCombo;
+            if (CurrentHeat > MaxHeat) CurrentHeat = MaxHeat;
+
+            // Clean Shot also generates battery
+            if (nextComboAction.Item1 == HeatedCleanShot)
+                CurrentBattery += 10;
+
             return true;
         }
 
         if (ComboStep != 0)
         {
             ComboStep = 0;
-            return TryUseAction(actionManager, HeatedSplitShot, targetId, "Heated Split Shot", false);
+            if (TryUseAction(actionManager, HeatedSplitShot, targetId, "Heated Split Shot", false))
+            {
+                CurrentHeat += HeatPerCombo;
+                if (CurrentHeat > MaxHeat) CurrentHeat = MaxHeat;
+                return true;
+            }
         }
 
         return false;
@@ -425,7 +510,7 @@ public class MachinistRotation : IDisposable
             if (!isOGcd)
                 lastGcdTime = DateTime.Now;
 
-            Plugin.Log.Information($"Rotation used: {actionName}");
+            Plugin.Log.Information($"Rotation used: {actionName} (Heat: {CurrentHeat})");
             return true;
         }
 
@@ -435,6 +520,36 @@ public class MachinistRotation : IDisposable
     private unsafe bool IsActionReady(ActionManager* actionManager, uint actionId)
     {
         return actionManager->GetActionStatus(ActionType.Action, actionId) == 0;
+    }
+
+    private void UpdateHeatFromAction(uint actionId)
+    {
+        switch (actionId)
+        {
+            case HeatedSplitShot:
+            case HeatedSlugShot:
+            case HeatedCleanShot:
+                CurrentHeat += HeatPerCombo;
+                if (actionId == HeatedCleanShot)
+                    CurrentBattery += 10;
+                break;
+            case BarrelStabilizer:
+                CurrentHeat += 50;
+                break;
+            case Hypercharge:
+                CurrentHeat -= HyperchargeCost;
+                break;
+            case AirAnchor:
+            case ChainSaw:
+                CurrentBattery += 20;
+                break;
+        }
+
+        // Clamp values
+        if (CurrentHeat > MaxHeat) CurrentHeat = MaxHeat;
+        if (CurrentHeat < 0) CurrentHeat = 0;
+        if (CurrentBattery > 100) CurrentBattery = 100;
+        if (CurrentBattery < 0) CurrentBattery = 0;
     }
 
     private bool IsActionEnabledInSettings(uint actionId)

@@ -189,7 +189,7 @@ public class MachinistWindow : Window, IDisposable
                 ImGuiHelpers.ScaledDummy(5.0f);
                 using (ImRaii.PushColor(ImGuiCol.ChildBg, new Vector4(0.15f, 0.15f, 0.2f, 1.0f)))
                 {
-                    using (var infoChild = ImRaii.Child("RotationInfo", new Vector2(-1, 55), true))
+                    using (var infoChild = ImRaii.Child("RotationInfo", new Vector2(-1, 85), true))
                     {
                         if (infoChild.Success)
                         {
@@ -201,10 +201,20 @@ public class MachinistWindow : Window, IDisposable
                             ImGui.SameLine();
                             ImGui.TextColored(new Vector4(0.4f, 0.9f, 1.0f, 1.0f), rotation.GetNextActionPreview());
 
+                            // Heat gauge display
+                            var heatColor = rotation.CurrentHeat >= 100
+                                ? new Vector4(1.0f, 0.2f, 0.2f, 1.0f)  // Red when at max (overcap risk)
+                                : rotation.CurrentHeat >= 50
+                                    ? new Vector4(1.0f, 0.6f, 0.0f, 1.0f)  // Orange when ready for Hypercharge
+                                    : new Vector4(0.4f, 0.8f, 1.0f, 1.0f); // Blue normally
+                            ImGui.PushStyleColor(ImGuiCol.PlotHistogram, heatColor);
+                            ImGui.ProgressBar(rotation.CurrentHeat / 100f, new Vector2(-1, 14), $"Heat: {rotation.CurrentHeat}/100");
+                            ImGui.PopStyleColor();
+
                             if (rotation.IsInOpener)
                             {
-                                var progress = rotation.OpenerStep / 29f;
-                                ImGui.ProgressBar(progress, new Vector2(-1, 12), $"Opener: {rotation.OpenerStep}/29");
+                                var progress = rotation.OpenerStep / 31f;
+                                ImGui.ProgressBar(progress, new Vector2(-1, 12), $"Opener: {rotation.OpenerStep}/31");
                             }
                         }
                     }
