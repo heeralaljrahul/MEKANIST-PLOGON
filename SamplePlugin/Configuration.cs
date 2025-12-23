@@ -48,4 +48,7 @@ public class MachinistSettings
 
     // ===== OPENER SETTINGS =====
     public bool UseOpener { get; set; } = true;  // Whether to use opener sequence at start
+
+    // ===== BURST PHASE SETTINGS =====
+    public bool DisableBurstPhase { get; set; } = false;  // When true, skips Hypercharge/Wildfire burst windows
 }

@@ -36,14 +36,12 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        // You might normally want to embed resources and load them from the manifest stream
-        var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
         var machinistImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "machinist.png");
 
         MachinistRotation = new MachinistRotation();
 
         ConfigWindow = new ConfigWindow(this);
-        MainWindow = new MainWindow(this, goatImagePath);
+        MainWindow = new MainWindow(this);
         MachinistWindow = new MachinistWindow(this, machinistImagePath, MachinistRotation);
 
         WindowSystem.AddWindow(ConfigWindow);
@@ -106,7 +104,7 @@ public sealed class Plugin : IDalamudPlugin
         MachinistWindow.Toggle();
     }
 
-    public void ToggleConfigUi() => ConfigWindow.Toggle();
-    public void ToggleMainUi() => MainWindow.Toggle();
+    public void ToggleConfigUi() => MachinistWindow.Toggle();
+    public void ToggleMainUi() => MachinistWindow.Toggle();
     public void ToggleMachinistUi() => MachinistWindow.Toggle();
 }

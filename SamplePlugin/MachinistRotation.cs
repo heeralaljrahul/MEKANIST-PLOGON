@@ -242,8 +242,8 @@ public class MachinistRotation : IDisposable
         // === PRIORITY 1: Heat Blast during Overheated ===
         if (IsOverheated)
         {
-            // Weave Wildfire after first Heat Blast
-            if (canWeave && Settings.UseWildfire && IsReady(actionManager, Wildfire))
+            // Weave Wildfire after first Heat Blast (skip if burst disabled)
+            if (canWeave && Settings.UseWildfire && !Settings.DisableBurstPhase && IsReady(actionManager, Wildfire))
             {
                 if (UseAction(actionManager, Wildfire, targetId, "Wildfire", true))
                     return;
@@ -290,11 +290,11 @@ public class MachinistRotation : IDisposable
                     if (UseAction(actionManager, Reassemble, targetId, "Reassemble", true)) return;
             }
 
-            // Hypercharge - NEVER OVERCAP HEAT
+            // Hypercharge - NEVER OVERCAP HEAT (skip if burst disabled, unless overcapping)
             if (Settings.UseHypercharge && IsReady(actionManager, Hypercharge))
             {
-                bool mustUse = CurrentHeat >= 100; // Prevent overcap
-                bool shouldUse = CurrentHeat >= 50;
+                bool mustUse = CurrentHeat >= 100; // Prevent overcap - use even if burst disabled
+                bool shouldUse = CurrentHeat >= 50 && !Settings.DisableBurstPhase;
 
                 if (mustUse || shouldUse)
                     if (UseAction(actionManager, Hypercharge, targetId, "Hypercharge", true)) return;
@@ -386,7 +386,8 @@ public class MachinistRotation : IDisposable
 
     private bool IsActionEnabledInSettings(uint actionId)
     {
-        return actionId switch
+        // Check individual ability toggle first
+        var abilityEnabled = actionId switch
         {
             Drill => Settings.UseDrill,
             AirAnchor => Settings.UseAirAnchor,
@@ -402,6 +403,12 @@ public class MachinistRotation : IDisposable
             HeatBlast or BlazingShot => Settings.UseHeatBlast,
             _ => true
         };
+
+        // Check burst phase override for Hypercharge/Wildfire
+        if (Settings.DisableBurstPhase && (actionId == Hypercharge || actionId == Wildfire))
+            return false;
+
+        return abilityEnabled;
     }
 
     public string GetNextActionPreview()

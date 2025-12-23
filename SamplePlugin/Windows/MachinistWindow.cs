@@ -228,10 +228,10 @@ public class MachinistWindow : Window, IDisposable
         var enabledCount = rotation.GetEnabledAbilityCount();
 
         ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.8f, 0.2f, 1.0f));
-        ImGui.Text("Abilities in Combo");
+        ImGui.Text("Combo Settings");
         ImGui.PopStyleColor();
         ImGui.SameLine();
-        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), $"({enabledCount}/12 enabled)");
+        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), $"({enabledCount}/12 abilities enabled)");
         ImGui.Separator();
 
         using (ImRaii.PushIndent(10f))
@@ -240,48 +240,94 @@ public class MachinistWindow : Window, IDisposable
             var settings = config.Machinist;
             var changed = false;
 
-            // Opener toggle
+            // === MAIN TOGGLES (prominent) ===
             ImGuiHelpers.ScaledDummy(3.0f);
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.9f, 0.6f, 1.0f, 1.0f));
-            var useOpener = settings.UseOpener;
-            if (ImGui.Checkbox("Use Opener Sequence", ref useOpener))
-            {
-                settings.UseOpener = useOpener;
-                changed = true;
-            }
-            ImGui.PopStyleColor();
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("When enabled, starting the combo will execute\nthe optimal opener sequence first.\n\nThe opener uses all enabled abilities below.");
 
-            ImGuiHelpers.ScaledDummy(8.0f);
+            // Disable Burst Phase - BIG RED TOGGLE
+            using (ImRaii.PushColor(ImGuiCol.FrameBg, new Vector4(0.3f, 0.1f, 0.1f, 1.0f)))
+            using (ImRaii.PushColor(ImGuiCol.FrameBgHovered, new Vector4(0.4f, 0.15f, 0.15f, 1.0f)))
+            using (ImRaii.PushColor(ImGuiCol.CheckMark, new Vector4(1.0f, 0.3f, 0.3f, 1.0f)))
+            {
+                var disableBurst = settings.DisableBurstPhase;
+                if (ImGui.Checkbox("DISABLE BURST PHASE", ref disableBurst))
+                {
+                    settings.DisableBurstPhase = disableBurst;
+                    changed = true;
+                }
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("When checked, the rotation will NOT use:\n- Hypercharge\n- Wildfire\n\nUseful for saving burst for specific phases.");
+
+            if (settings.DisableBurstPhase)
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), "(Burst abilities skipped!)");
+            }
+
+            ImGuiHelpers.ScaledDummy(5.0f);
+
+            // Opener toggle
+            using (ImRaii.PushColor(ImGuiCol.CheckMark, new Vector4(0.9f, 0.6f, 1.0f, 1.0f)))
+            {
+                var useOpener = settings.UseOpener;
+                if (ImGui.Checkbox("Use Opener Sequence", ref useOpener))
+                {
+                    settings.UseOpener = useOpener;
+                    changed = true;
+                }
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("When enabled, starting the combo will execute\nthe optimal opener sequence first.");
+
+            ImGuiHelpers.ScaledDummy(10.0f);
+            ImGui.Separator();
+            ImGuiHelpers.ScaledDummy(5.0f);
+
+            // === INDIVIDUAL ABILITY TOGGLES ===
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 1.0f), "Individual Ability Toggles:");
+            ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "Check = ability will be used in combo, Uncheck = skipped");
+            ImGuiHelpers.ScaledDummy(5.0f);
 
             // Burst GCDs
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.5f, 0.2f, 1.0f));
-            ImGui.Text("Burst GCDs (main damage)");
+            ImGui.Text("Burst Tools");
             ImGui.PopStyleColor();
 
-            changed |= DrawAbilityToggle("Drill", settings.UseDrill, v => settings.UseDrill = v, "High potency single-target attack");
+            changed |= DrawAbilityToggle("Drill", settings.UseDrill, v => settings.UseDrill = v, "High potency single-target attack\n580 potency, 20s cooldown");
             ImGui.SameLine();
-            changed |= DrawAbilityToggle("Air Anchor", settings.UseAirAnchor, v => settings.UseAirAnchor = v, "High potency + Battery gauge");
+            changed |= DrawAbilityToggle("Air Anchor", settings.UseAirAnchor, v => settings.UseAirAnchor = v, "High potency + Battery gauge\n580 potency, 40s cooldown, +20 Battery");
             ImGui.SameLine();
-            changed |= DrawAbilityToggle("Chain Saw", settings.UseChainSaw, v => settings.UseChainSaw = v, "High potency attack");
+            changed |= DrawAbilityToggle("Chain Saw", settings.UseChainSaw, v => settings.UseChainSaw = v, "High potency attack\n580 potency, 60s cooldown");
 
-            changed |= DrawAbilityToggle("Excavator", settings.UseExcavator, v => settings.UseExcavator = v, "Follow-up to Chain Saw");
+            changed |= DrawAbilityToggle("Excavator", settings.UseExcavator, v => settings.UseExcavator = v, "Proc from Chain Saw");
             ImGui.SameLine();
-            changed |= DrawAbilityToggle("Full Metal Field", settings.UseFullMetalField, v => settings.UseFullMetalField = v, "Powerful finisher");
+            changed |= DrawAbilityToggle("Full Metal Field", settings.UseFullMetalField, v => settings.UseFullMetalField = v, "Proc from Barrel Stabilizer");
 
             ImGuiHelpers.ScaledDummy(8.0f);
 
-            // Hypercharge Window
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.3f, 0.3f, 1.0f));
-            ImGui.Text("Hypercharge Window");
-            ImGui.PopStyleColor();
+            // Hypercharge Window (dimmed if burst is disabled)
+            var burstDisabled = settings.DisableBurstPhase;
+            if (burstDisabled)
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.5f, 0.3f, 0.3f, 1.0f));
+                ImGui.Text("Hypercharge Window (DISABLED by burst toggle)");
+                ImGui.PopStyleColor();
+            }
+            else
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.3f, 0.3f, 1.0f));
+                ImGui.Text("Hypercharge Window");
+                ImGui.PopStyleColor();
+            }
 
-            changed |= DrawAbilityToggle("Hypercharge", settings.UseHypercharge, v => settings.UseHypercharge = v, "Activate heat mode for Heat Blasts");
-            ImGui.SameLine();
-            changed |= DrawAbilityToggle("Heat Blast", settings.UseHeatBlast, v => settings.UseHeatBlast = v, "Fast attacks during Hypercharge");
-            ImGui.SameLine();
-            changed |= DrawAbilityToggle("Wildfire", settings.UseWildfire, v => settings.UseWildfire = v, "Burst damage during Hypercharge");
+            using (ImRaii.Disabled(burstDisabled))
+            {
+                changed |= DrawAbilityToggle("Hypercharge", settings.UseHypercharge, v => settings.UseHypercharge = v, "Activates Overheated state for Heat Blasts\nCosts 50 Heat, use during burst windows");
+                ImGui.SameLine();
+                changed |= DrawAbilityToggle("Heat Blast", settings.UseHeatBlast, v => settings.UseHeatBlast = v, "Fast 1.5s GCD during Hypercharge\nMust use all 5 stacks");
+                ImGui.SameLine();
+                changed |= DrawAbilityToggle("Wildfire", settings.UseWildfire, v => settings.UseWildfire = v, "Explodes based on weaponskills used\nUse during Hypercharge for max damage");
+            }
 
             ImGuiHelpers.ScaledDummy(8.0f);
 
@@ -290,22 +336,22 @@ public class MachinistWindow : Window, IDisposable
             ImGui.Text("Buffs & oGCDs");
             ImGui.PopStyleColor();
 
-            changed |= DrawAbilityToggle("Reassemble", settings.UseReassemble, v => settings.UseReassemble = v, "Guarantees crit on next GCD");
+            changed |= DrawAbilityToggle("Reassemble", settings.UseReassemble, v => settings.UseReassemble = v, "Guarantees crit + direct hit on next GCD\nUse before Drill/Air Anchor/Chain Saw");
             ImGui.SameLine();
-            changed |= DrawAbilityToggle("Barrel Stabilizer", settings.UseBarrelStabilizer, v => settings.UseBarrelStabilizer = v, "Generates Heat gauge");
+            changed |= DrawAbilityToggle("Barrel Stabilizer", settings.UseBarrelStabilizer, v => settings.UseBarrelStabilizer = v, "Generates +50 Heat instantly\nGrants Full Metal Field proc");
 
-            changed |= DrawAbilityToggle("Gauss Round", settings.UseGaussRound, v => settings.UseGaussRound = v, "Weave oGCD damage");
+            changed |= DrawAbilityToggle("Gauss Round", settings.UseGaussRound, v => settings.UseGaussRound = v, "oGCD damage, weave between GCDs\n3 charges, don't overcap");
             ImGui.SameLine();
-            changed |= DrawAbilityToggle("Ricochet", settings.UseRicochet, v => settings.UseRicochet = v, "Weave oGCD damage");
+            changed |= DrawAbilityToggle("Ricochet", settings.UseRicochet, v => settings.UseRicochet = v, "oGCD damage, weave between GCDs\n3 charges, don't overcap");
 
             if (changed)
             {
                 config.Save();
-                lastActionResult = "Ability settings updated";
+                lastActionResult = "Settings updated";
                 lastActionTime = DateTime.Now;
             }
 
-            ImGuiHelpers.ScaledDummy(8.0f);
+            ImGuiHelpers.ScaledDummy(10.0f);
 
             // Quick presets
             ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Quick Presets:");
@@ -313,6 +359,7 @@ public class MachinistWindow : Window, IDisposable
             if (ImGui.Button("Enable All", new Vector2(90, 25)))
             {
                 SetAllAbilities(settings, true);
+                settings.DisableBurstPhase = false;
                 config.Save();
                 lastActionResult = "All abilities enabled";
                 lastActionTime = DateTime.Now;
@@ -322,21 +369,20 @@ public class MachinistWindow : Window, IDisposable
             {
                 SetAllAbilities(settings, false);
                 config.Save();
-                lastActionResult = "All abilities disabled (basic combo only)";
+                lastActionResult = "All abilities disabled (1-2-3 combo only)";
                 lastActionTime = DateTime.Now;
             }
             ImGui.SameLine();
-            if (ImGui.Button("Basic Only", new Vector2(90, 25)))
+            if (ImGui.Button("No Burst", new Vector2(90, 25)))
             {
-                SetAllAbilities(settings, false);
-                settings.UseGaussRound = true;
-                settings.UseRicochet = true;
+                SetAllAbilities(settings, true);
+                settings.DisableBurstPhase = true;
                 config.Save();
-                lastActionResult = "Basic combo + oGCDs only";
+                lastActionResult = "Burst phase disabled";
                 lastActionTime = DateTime.Now;
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Only uses 1-2-3 combo with Gauss Round/Ricochet weaves");
+                ImGui.SetTooltip("Enables all abilities but disables Hypercharge/Wildfire burst");
         }
     }
 
