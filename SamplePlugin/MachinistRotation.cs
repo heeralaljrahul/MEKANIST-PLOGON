@@ -8,7 +8,10 @@ namespace SamplePlugin;
 
 public class MachinistRotation : IDisposable
 {
-    // Machinist Action IDs - Single Target
+    // Machinist Action IDs
+    public const uint SplitShot = 2866;
+    public const uint SlugShot = 2868;
+    public const uint CleanShot = 2873;
     public const uint HeatedSplitShot = 7411;
     public const uint HeatedSlugShot = 7412;
     public const uint HeatedCleanShot = 7413;
@@ -27,6 +30,8 @@ public class MachinistRotation : IDisposable
     public const uint Wildfire = 2878;
     public const uint Reassemble = 2876;
     public const uint BarrelStabilizer = 7414;
+    public const uint RookAutoturret = 2864;
+    public const uint AutomatonQueen = 16501;
 
     // Reference to settings
     private MachinistSettings Settings => Plugin.PluginInterface.GetPluginConfig() is Configuration config
@@ -41,20 +46,23 @@ public class MachinistRotation : IDisposable
     public string NextAction { get; private set; } = "";
     public string RotationStatus { get; private set; } = "Idle";
 
-    // Heat tracking - read from game gauge
+    // Game gauge data
     public int CurrentHeat { get; private set; }
     public int CurrentBattery { get; private set; }
+    public bool IsOverheated { get; private set; }
+    public byte OverheatStacks { get; private set; }
 
-    // Timing - minimal lockout just to prevent spam
-    private DateTime lastActionTime = DateTime.MinValue;
+    // Combo state from game
+    private float comboTimer;
+    private uint lastComboAction;
+
+    // Timing for weaving
     private DateTime lastGcdTime = DateTime.MinValue;
-    private const float MinActionDelay = 0.1f; // Minimum delay between action attempts
+    private DateTime lastActionTime = DateTime.MinValue;
+    private const float GCD = 2.5f;
+    private const float WeaveWindow = 0.7f;
 
-    // Hypercharge state
-    private bool isInHypercharge;
-    private int hyperchargeStacks;
-
-    // Opener sequence - optimized for max DPS
+    // Opener sequence
     private readonly List<(uint ActionId, bool IsOGcd, string Name)> openerSequence =
     [
         (Reassemble, true, "Reassemble"),
@@ -100,14 +108,10 @@ public class MachinistRotation : IDisposable
         {
             IsEnabled = true;
             if (Settings.UseOpener)
-            {
                 StartOpener();
-            }
             else
-            {
                 RotationStatus = "Running";
-            }
-            Plugin.Log.Information("Auto-rotation started via combo button press");
+            Plugin.Log.Information("Auto-rotation started");
         }
     }
 
@@ -115,8 +119,8 @@ public class MachinistRotation : IDisposable
     {
         IsInOpener = true;
         OpenerStep = 0;
-        RotationStatus = "Opener Active";
-        Plugin.Log.Information("Machinist opener started");
+        RotationStatus = "Opener";
+        Plugin.Log.Information("Opener started");
     }
 
     public void StopRotation()
@@ -124,18 +128,14 @@ public class MachinistRotation : IDisposable
         IsEnabled = false;
         IsInOpener = false;
         OpenerStep = 0;
-        isInHypercharge = false;
-        hyperchargeStacks = 0;
         RotationStatus = "Stopped";
-        Plugin.Log.Information("Machinist rotation stopped");
+        Plugin.Log.Information("Rotation stopped");
     }
 
     public void ResetOpener()
     {
         IsInOpener = false;
         OpenerStep = 0;
-        isInHypercharge = false;
-        hyperchargeStacks = 0;
         RotationStatus = IsEnabled ? "Running" : "Idle";
     }
 
@@ -144,59 +144,52 @@ public class MachinistRotation : IDisposable
         if (!IsEnabled)
             return;
 
-        // Read actual heat gauge from game
-        ReadJobGauge();
+        // Read game state
+        ReadGameState();
 
         var target = Plugin.TargetManager.Target;
-        if (target == null || target is not IBattleChara battleTarget)
+        if (target == null || target is not IBattleChara battleTarget || battleTarget.IsDead)
         {
             RotationStatus = "No Target";
-            NextAction = "Waiting for target...";
+            NextAction = "Select target...";
             return;
         }
 
-        if (battleTarget.IsDead)
-        {
-            RotationStatus = "Target Dead";
-            NextAction = "Waiting for target...";
-            return;
-        }
-
-        // Small delay to prevent spamming
-        var timeSinceLastAction = (float)(DateTime.Now - lastActionTime).TotalSeconds;
-        if (timeSinceLastAction < MinActionDelay)
+        // Throttle to prevent spam
+        var timeSinceAction = (float)(DateTime.Now - lastActionTime).TotalSeconds;
+        if (timeSinceAction < 0.05f)
             return;
 
         if (IsInOpener)
-        {
             ExecuteOpener(target.GameObjectId);
-        }
         else
-        {
             ExecuteRotation(target.GameObjectId);
-        }
     }
 
-    private unsafe void ReadJobGauge()
+    private unsafe void ReadGameState()
     {
         try
         {
+            // Read job gauge
             var jobGauge = JobGaugeManager.Instance();
             if (jobGauge != null)
             {
-                // MCH job gauge is at offset for machinist
-                // Heat is stored in the gauge
                 var gaugeData = (byte*)jobGauge;
-                // JobGaugeManager structure: first 8 bytes header, then gauge data
-                // MCH gauge: Heat at offset 0, Battery at offset 2, etc.
-                CurrentHeat = gaugeData[8];  // Heat gauge
-                CurrentBattery = gaugeData[10]; // Battery gauge
+                CurrentHeat = gaugeData[8];
+                CurrentBattery = gaugeData[10];
+                IsOverheated = gaugeData[12] != 0;
+                OverheatStacks = gaugeData[14];
+            }
+
+            // Read combo state
+            var comboPtr = (ComboDetail*)ActionManager.Instance();
+            if (comboPtr != null)
+            {
+                comboTimer = comboPtr->Timer;
+                lastComboAction = comboPtr->Action;
             }
         }
-        catch
-        {
-            // If we can't read the gauge, keep the last known values
-        }
+        catch { }
     }
 
     private unsafe void ExecuteOpener(ulong targetId)
@@ -204,8 +197,7 @@ public class MachinistRotation : IDisposable
         if (OpenerStep >= openerSequence.Count)
         {
             IsInOpener = false;
-            RotationStatus = "Opener Complete";
-            Plugin.Log.Information("Opener completed");
+            RotationStatus = "Running";
             return;
         }
 
@@ -220,278 +212,176 @@ public class MachinistRotation : IDisposable
         NextAction = $"[Opener] {actionName}";
 
         var actionManager = ActionManager.Instance();
-        if (actionManager == null)
-            return;
+        if (actionManager == null) return;
 
-        // Check if action is ready
-        if (actionManager->GetActionStatus(ActionType.Action, actionId) != 0)
-            return;
-
-        // Try to use the action
-        if (actionManager->UseAction(ActionType.Action, actionId, targetId))
+        // Check if ready and use
+        if (actionManager->GetActionStatus(ActionType.Action, actionId) == 0)
         {
-            LastAction = actionName;
-            lastActionTime = DateTime.Now;
-            if (!isOGcd)
-                lastGcdTime = DateTime.Now;
-
-            if (actionId == Hypercharge)
+            if (actionManager->UseAction(ActionType.Action, actionId, targetId))
             {
-                isInHypercharge = true;
-                hyperchargeStacks = 5;
+                LastAction = actionName;
+                lastActionTime = DateTime.Now;
+                if (!isOGcd) lastGcdTime = DateTime.Now;
+                OpenerStep++;
+                RotationStatus = $"Opener {OpenerStep}/{openerSequence.Count}";
+                Plugin.Log.Information($"Opener: {actionName}");
             }
-            else if (actionId == HeatBlast || actionId == BlazingShot)
-            {
-                hyperchargeStacks--;
-                if (hyperchargeStacks <= 0)
-                    isInHypercharge = false;
-            }
-
-            OpenerStep++;
-            RotationStatus = $"Opener {OpenerStep}/{openerSequence.Count}";
-            Plugin.Log.Information($"Opener: {actionName}");
         }
     }
 
     private unsafe void ExecuteRotation(ulong targetId)
     {
         var actionManager = ActionManager.Instance();
-        if (actionManager == null)
+        if (actionManager == null) return;
+
+        RotationStatus = $"Heat:{CurrentHeat} Batt:{CurrentBattery}";
+
+        var timeSinceGcd = (float)(DateTime.Now - lastGcdTime).TotalSeconds;
+        bool canWeave = timeSinceGcd >= WeaveWindow && timeSinceGcd < (GCD - 0.5f);
+
+        // === PRIORITY 1: Heat Blast during Overheated ===
+        if (IsOverheated)
+        {
+            // Weave Wildfire after first Heat Blast
+            if (canWeave && Settings.UseWildfire && IsReady(actionManager, Wildfire))
+            {
+                if (UseAction(actionManager, Wildfire, targetId, "Wildfire", true))
+                    return;
+            }
+
+            // Weave Gauss/Ricochet between Heat Blasts
+            if (canWeave)
+            {
+                if (Settings.UseGaussRound && IsReady(actionManager, GaussRound))
+                    if (UseAction(actionManager, GaussRound, targetId, "Gauss Round", true)) return;
+                if (Settings.UseGaussRound && IsReady(actionManager, DoubleCheck))
+                    if (UseAction(actionManager, DoubleCheck, targetId, "Double Check", true)) return;
+                if (Settings.UseRicochet && IsReady(actionManager, Ricochet))
+                    if (UseAction(actionManager, Ricochet, targetId, "Ricochet", true)) return;
+                if (Settings.UseRicochet && IsReady(actionManager, Checkmate))
+                    if (UseAction(actionManager, Checkmate, targetId, "Checkmate", true)) return;
+            }
+
+            // Use Heat Blast / Blazing Shot
+            if (Settings.UseHeatBlast)
+            {
+                if (IsReady(actionManager, BlazingShot))
+                    if (UseAction(actionManager, BlazingShot, targetId, "Blazing Shot", false)) return;
+                if (IsReady(actionManager, HeatBlast))
+                    if (UseAction(actionManager, HeatBlast, targetId, "Heat Blast", false)) return;
+            }
             return;
+        }
 
-        RotationStatus = $"Heat: {CurrentHeat} | Battery: {CurrentBattery}";
-
-        // Priority system for maximum DPS:
-        // 1. Heat Blast during Hypercharge (must use all 5)
-        // 2. Burst tools when ready (Air Anchor > Drill > Chain Saw > Excavator > FMF)
-        // 3. oGCDs (weave Gauss/Ricochet, Barrel Stab, Hypercharge, Wildfire)
-        // 4. Basic combo as filler
-
-        // During Hypercharge, spam Heat Blast
-        if (isInHypercharge && hyperchargeStacks > 0)
+        // === PRIORITY 2: Weave oGCDs ===
+        if (canWeave)
         {
-            if (Settings.UseHeatBlast && TryUseGcd(actionManager, HeatBlast, targetId, "Heat Blast"))
+            // Barrel Stabilizer - use on cooldown
+            if (Settings.UseBarrelStabilizer && IsReady(actionManager, BarrelStabilizer))
+                if (UseAction(actionManager, BarrelStabilizer, targetId, "Barrel Stabilizer", true)) return;
+
+            // Reassemble before tools
+            if (Settings.UseReassemble && IsReady(actionManager, Reassemble))
             {
-                hyperchargeStacks--;
-                if (hyperchargeStacks <= 0)
-                    isInHypercharge = false;
-                return;
+                bool toolReady = (Settings.UseDrill && IsReady(actionManager, Drill)) ||
+                                (Settings.UseAirAnchor && IsReady(actionManager, AirAnchor)) ||
+                                (Settings.UseChainSaw && IsReady(actionManager, ChainSaw));
+                if (toolReady)
+                    if (UseAction(actionManager, Reassemble, targetId, "Reassemble", true)) return;
             }
-            // Also try BlazingShot (upgraded Heat Blast)
-            if (Settings.UseHeatBlast && TryUseGcd(actionManager, BlazingShot, targetId, "Blazing Shot"))
+
+            // Hypercharge - NEVER OVERCAP HEAT
+            if (Settings.UseHypercharge && IsReady(actionManager, Hypercharge))
             {
-                hyperchargeStacks--;
-                if (hyperchargeStacks <= 0)
-                    isInHypercharge = false;
-                return;
+                bool mustUse = CurrentHeat >= 100; // Prevent overcap
+                bool shouldUse = CurrentHeat >= 50;
+
+                if (mustUse || shouldUse)
+                    if (UseAction(actionManager, Hypercharge, targetId, "Hypercharge", true)) return;
+            }
+
+            // Gauss Round / Ricochet - dump charges
+            if (Settings.UseGaussRound)
+            {
+                if (IsReady(actionManager, GaussRound))
+                    if (UseAction(actionManager, GaussRound, targetId, "Gauss Round", true)) return;
+                if (IsReady(actionManager, DoubleCheck))
+                    if (UseAction(actionManager, DoubleCheck, targetId, "Double Check", true)) return;
+            }
+            if (Settings.UseRicochet)
+            {
+                if (IsReady(actionManager, Ricochet))
+                    if (UseAction(actionManager, Ricochet, targetId, "Ricochet", true)) return;
+                if (IsReady(actionManager, Checkmate))
+                    if (UseAction(actionManager, Checkmate, targetId, "Checkmate", true)) return;
             }
         }
 
-        // Try burst GCDs first (highest DPS priority)
-        if (TryUseBurstGcds(actionManager, targetId))
-            return;
+        // === PRIORITY 3: Full Metal Field (proc from Barrel Stabilizer) ===
+        if (Settings.UseFullMetalField && IsReady(actionManager, FullMetalField))
+            if (UseAction(actionManager, FullMetalField, targetId, "Full Metal Field", false)) return;
 
-        // Weave oGCDs
-        if (TryUseOGcds(actionManager, targetId))
-            return;
+        // === PRIORITY 4: Burst Tools ===
+        // Air Anchor > Drill > Chain Saw > Excavator
+        if (Settings.UseAirAnchor && IsReady(actionManager, AirAnchor))
+            if (UseAction(actionManager, AirAnchor, targetId, "Air Anchor", false)) return;
 
-        // Filler: Basic combo
-        TryUseCombo(actionManager, targetId);
+        if (Settings.UseDrill && IsReady(actionManager, Drill))
+            if (UseAction(actionManager, Drill, targetId, "Drill", false)) return;
+
+        if (Settings.UseChainSaw && IsReady(actionManager, ChainSaw))
+            if (UseAction(actionManager, ChainSaw, targetId, "Chain Saw", false)) return;
+
+        if (Settings.UseExcavator && IsReady(actionManager, Excavator))
+            if (UseAction(actionManager, Excavator, targetId, "Excavator", false)) return;
+
+        // === PRIORITY 5: 1-2-3 Combo ===
+        // Use game's combo state to determine next action
+        if (comboTimer > 0)
+        {
+            // Combo is active - continue it
+            if (lastComboAction == SplitShot || lastComboAction == HeatedSplitShot)
+            {
+                // Next is Slug Shot
+                if (IsReady(actionManager, HeatedSlugShot))
+                    if (UseAction(actionManager, HeatedSlugShot, targetId, "Heated Slug Shot", false)) return;
+                if (IsReady(actionManager, SlugShot))
+                    if (UseAction(actionManager, SlugShot, targetId, "Slug Shot", false)) return;
+            }
+            else if (lastComboAction == SlugShot || lastComboAction == HeatedSlugShot)
+            {
+                // Next is Clean Shot
+                if (IsReady(actionManager, HeatedCleanShot))
+                    if (UseAction(actionManager, HeatedCleanShot, targetId, "Heated Clean Shot", false)) return;
+                if (IsReady(actionManager, CleanShot))
+                    if (UseAction(actionManager, CleanShot, targetId, "Clean Shot", false)) return;
+            }
+        }
+
+        // Start new combo with Split Shot
+        if (IsReady(actionManager, HeatedSplitShot))
+            if (UseAction(actionManager, HeatedSplitShot, targetId, "Heated Split Shot", false)) return;
+        if (IsReady(actionManager, SplitShot))
+            UseAction(actionManager, SplitShot, targetId, "Split Shot", false);
     }
 
-    private unsafe bool TryUseBurstGcds(ActionManager* actionManager, ulong targetId)
+    private unsafe bool IsReady(ActionManager* am, uint actionId)
     {
-        // Priority: Air Anchor > Drill > Chain Saw > Excavator > Full Metal Field
-        // Use Reassemble before high-damage tools
-
-        // Air Anchor
-        if (Settings.UseAirAnchor && IsActionReady(actionManager, AirAnchor))
-        {
-            // Use Reassemble if available
-            if (Settings.UseReassemble && IsActionReady(actionManager, Reassemble))
-                TryUseOGcd(actionManager, Reassemble, targetId, "Reassemble");
-
-            if (TryUseGcd(actionManager, AirAnchor, targetId, "Air Anchor"))
-                return true;
-        }
-
-        // Drill
-        if (Settings.UseDrill && IsActionReady(actionManager, Drill))
-        {
-            if (Settings.UseReassemble && IsActionReady(actionManager, Reassemble))
-                TryUseOGcd(actionManager, Reassemble, targetId, "Reassemble");
-
-            if (TryUseGcd(actionManager, Drill, targetId, "Drill"))
-                return true;
-        }
-
-        // Chain Saw
-        if (Settings.UseChainSaw && IsActionReady(actionManager, ChainSaw))
-        {
-            if (Settings.UseReassemble && IsActionReady(actionManager, Reassemble))
-                TryUseOGcd(actionManager, Reassemble, targetId, "Reassemble");
-
-            if (TryUseGcd(actionManager, ChainSaw, targetId, "Chain Saw"))
-                return true;
-        }
-
-        // Excavator (proc from Chain Saw)
-        if (Settings.UseExcavator && IsActionReady(actionManager, Excavator))
-        {
-            if (TryUseGcd(actionManager, Excavator, targetId, "Excavator"))
-                return true;
-        }
-
-        // Full Metal Field
-        if (Settings.UseFullMetalField && IsActionReady(actionManager, FullMetalField))
-        {
-            if (TryUseGcd(actionManager, FullMetalField, targetId, "Full Metal Field"))
-                return true;
-        }
-
-        return false;
+        return am->GetActionStatus(ActionType.Action, actionId) == 0;
     }
 
-    private unsafe bool TryUseOGcds(ActionManager* actionManager, ulong targetId)
+    private unsafe bool UseAction(ActionManager* am, uint actionId, ulong targetId, string name, bool isOGcd)
     {
-        // Barrel Stabilizer - use on cooldown for heat
-        if (Settings.UseBarrelStabilizer && IsActionReady(actionManager, BarrelStabilizer))
+        if (am->UseAction(ActionType.Action, actionId, targetId))
         {
-            if (TryUseOGcd(actionManager, BarrelStabilizer, targetId, "Barrel Stabilizer"))
-                return true;
-        }
-
-        // Hypercharge - use when heat >= 50, but MUST use at 100 to prevent overcap
-        // Save 50 heat for Wildfire windows (every 2 min)
-        if (Settings.UseHypercharge && !isInHypercharge && IsActionReady(actionManager, Hypercharge))
-        {
-            bool shouldHypercharge = false;
-
-            // MUST use at 100 heat to prevent overcap
-            if (CurrentHeat >= 100)
-            {
-                shouldHypercharge = true;
-            }
-            // Use at 95+ to prevent overcap from next combo action
-            else if (CurrentHeat >= 95)
-            {
-                shouldHypercharge = true;
-            }
-            // Normal usage at 50+ heat
-            else if (CurrentHeat >= 50)
-            {
-                // Check if Wildfire is ready - pair them together
-                if (Settings.UseWildfire && IsActionReady(actionManager, Wildfire))
-                {
-                    shouldHypercharge = true;
-                }
-                // Otherwise use Hypercharge freely above 50 heat
-                else
-                {
-                    shouldHypercharge = true;
-                }
-            }
-
-            if (shouldHypercharge && TryUseOGcd(actionManager, Hypercharge, targetId, "Hypercharge"))
-            {
-                isInHypercharge = true;
-                hyperchargeStacks = 5;
-                return true;
-            }
-        }
-
-        // Wildfire - use during Hypercharge for max damage
-        if (Settings.UseWildfire && isInHypercharge && IsActionReady(actionManager, Wildfire))
-        {
-            if (TryUseOGcd(actionManager, Wildfire, targetId, "Wildfire"))
-                return true;
-        }
-
-        // Gauss Round / Double Check - dump charges, don't overcap
-        if (Settings.UseGaussRound)
-        {
-            if (IsActionReady(actionManager, GaussRound) && TryUseOGcd(actionManager, GaussRound, targetId, "Gauss Round"))
-                return true;
-            if (IsActionReady(actionManager, DoubleCheck) && TryUseOGcd(actionManager, DoubleCheck, targetId, "Double Check"))
-                return true;
-        }
-
-        // Ricochet / Checkmate - dump charges, don't overcap
-        if (Settings.UseRicochet)
-        {
-            if (IsActionReady(actionManager, Ricochet) && TryUseOGcd(actionManager, Ricochet, targetId, "Ricochet"))
-                return true;
-            if (IsActionReady(actionManager, Checkmate) && TryUseOGcd(actionManager, Checkmate, targetId, "Checkmate"))
-                return true;
-        }
-
-        return false;
-    }
-
-    private unsafe bool TryUseCombo(ActionManager* actionManager, ulong targetId)
-    {
-        // The game handles combo state internally - just try actions in order
-        // and the game will tell us which is ready via GetActionStatus
-
-        // Try Clean Shot (combo finisher) - game will only allow if combo is ready
-        if (IsActionReady(actionManager, HeatedCleanShot))
-        {
-            if (TryUseGcd(actionManager, HeatedCleanShot, targetId, "Heated Clean Shot"))
-                return true;
-        }
-
-        // Try Slug Shot (combo 2)
-        if (IsActionReady(actionManager, HeatedSlugShot))
-        {
-            if (TryUseGcd(actionManager, HeatedSlugShot, targetId, "Heated Slug Shot"))
-                return true;
-        }
-
-        // Try Split Shot (combo starter) - always available
-        if (IsActionReady(actionManager, HeatedSplitShot))
-        {
-            if (TryUseGcd(actionManager, HeatedSplitShot, targetId, "Heated Split Shot"))
-                return true;
-        }
-
-        return false;
-    }
-
-    private unsafe bool TryUseGcd(ActionManager* actionManager, uint actionId, ulong targetId, string actionName)
-    {
-        if (actionManager->GetActionStatus(ActionType.Action, actionId) != 0)
-            return false;
-
-        if (actionManager->UseAction(ActionType.Action, actionId, targetId))
-        {
-            LastAction = actionName;
-            NextAction = actionName;
+            LastAction = name;
+            NextAction = name;
             lastActionTime = DateTime.Now;
-            lastGcdTime = DateTime.Now;
-            Plugin.Log.Information($"GCD: {actionName}");
+            if (!isOGcd) lastGcdTime = DateTime.Now;
+            Plugin.Log.Information($"{(isOGcd ? "oGCD" : "GCD")}: {name}");
             return true;
         }
         return false;
-    }
-
-    private unsafe bool TryUseOGcd(ActionManager* actionManager, uint actionId, ulong targetId, string actionName)
-    {
-        if (actionManager->GetActionStatus(ActionType.Action, actionId) != 0)
-            return false;
-
-        if (actionManager->UseAction(ActionType.Action, actionId, targetId))
-        {
-            LastAction = actionName;
-            lastActionTime = DateTime.Now;
-            Plugin.Log.Information($"oGCD: {actionName}");
-            return true;
-        }
-        return false;
-    }
-
-    private unsafe bool IsActionReady(ActionManager* actionManager, uint actionId)
-    {
-        return actionManager->GetActionStatus(ActionType.Action, actionId) == 0;
     }
 
     private bool IsActionEnabledInSettings(uint actionId)
@@ -516,18 +406,15 @@ public class MachinistRotation : IDisposable
 
     public string GetNextActionPreview()
     {
-        if (!IsEnabled)
-            return "Rotation disabled";
-
+        if (!IsEnabled) return "Disabled";
         if (IsInOpener && OpenerStep < openerSequence.Count)
             return $"[Opener] {openerSequence[OpenerStep].Name}";
-
         return string.IsNullOrEmpty(NextAction) ? "Ready" : NextAction;
     }
 
     public int GetEnabledAbilityCount()
     {
-        var count = 0;
+        int count = 0;
         if (Settings.UseDrill) count++;
         if (Settings.UseAirAnchor) count++;
         if (Settings.UseChainSaw) count++;
@@ -542,4 +429,12 @@ public class MachinistRotation : IDisposable
         if (Settings.UseRicochet) count++;
         return count;
     }
+}
+
+// Structure to read combo state from game memory
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+internal struct ComboDetail
+{
+    [System.Runtime.InteropServices.FieldOffset(0x60)] public float Timer;
+    [System.Runtime.InteropServices.FieldOffset(0x64)] public uint Action;
 }
