@@ -139,15 +139,29 @@ public class MachinistWindow : Window, IDisposable
                     lastActionTime = DateTime.Now;
                 }
                 ImGui.PopStyleColor(2);
+
+                if (rotation.IsTargetingSuppressed)
+                {
+                    ImGui.SameLine();
+                    ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.8f, 1.0f));
+                    ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.25f, 0.6f, 0.95f, 1.0f));
+                    if (ImGui.Button("Continue Combo", new Vector2(140, 32)))
+                    {
+                        var resumed = rotation.ContinueRotation(Settings.AutoTargetNearest);
+                        lastActionResult = resumed ? "Rotation continued" : "No valid target to continue";
+                        lastActionTime = DateTime.Now;
+                    }
+                    ImGui.PopStyleColor(2);
+                }
             }
             else
             {
                 ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.7f, 0.2f, 0.2f, 1.0f));
                 ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.85f, 0.25f, 0.25f, 1.0f));
-                if (ImGui.Button("Stop Rotation", startStopSize))
+                if (ImGui.Button("Stop & Clear Target", startStopSize))
                 {
-                    rotation.StopRotation();
-                    lastActionResult = "Rotation stopped";
+                    rotation.StopRotation(true);
+                    lastActionResult = "Rotation stopped and target cleared";
                     lastActionTime = DateTime.Now;
                 }
                 ImGui.PopStyleColor(2);
@@ -538,6 +552,11 @@ public class MachinistWindow : Window, IDisposable
             else
             {
                 ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "Ready - select a target and press a combo button");
+            }
+
+            if (rotation.IsTargetingSuppressed)
+            {
+                ImGui.TextColored(new Vector4(0.8f, 0.6f, 0.2f, 1.0f), "> Targeting paused - press Continue Combo to resume");
             }
 
             if (rotation.IsEnabled && !string.IsNullOrEmpty(rotation.LastAction))
