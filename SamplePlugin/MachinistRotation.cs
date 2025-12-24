@@ -49,6 +49,8 @@ public class MachinistRotation : IDisposable
     public string NextAction { get; private set; } = "";
     public string RotationStatus { get; private set; } = "Idle";
     public bool IsTargetingSuppressed { get; private set; }
+    private DateTime openerStartTime = DateTime.MinValue;
+    private DateTime openerStepStart = DateTime.MinValue;
 
     // Game gauge data
     public int CurrentHeat { get; private set; }
@@ -180,6 +182,8 @@ public class MachinistRotation : IDisposable
         IsInOpener = true;
         OpenerStep = 0;
         RotationStatus = "Opener";
+        openerStartTime = DateTime.Now;
+        openerStepStart = DateTime.Now;
         Plugin.Log.Information("Opener started");
     }
 
@@ -235,6 +239,8 @@ public class MachinistRotation : IDisposable
         IsInOpener = false;
         OpenerStep = 0;
         RotationStatus = IsEnabled ? "Running" : "Idle";
+        openerStartTime = DateTime.MinValue;
+        openerStepStart = DateTime.MinValue;
     }
 
     private unsafe void OnFrameworkUpdate(IFramework framework)
@@ -372,11 +378,20 @@ public class MachinistRotation : IDisposable
             return;
         }
 
+        // Fail-safe: exit opener if it takes too long (eg, missing abilities)
+        if (openerStartTime != DateTime.MinValue && DateTime.Now - openerStartTime > TimeSpan.FromSeconds(15))
+        {
+            Plugin.Log.Warning("Opener timeout reached - switching to normal rotation");
+            ResetOpener();
+            return;
+        }
+
         var (actionId, isOGcd, actionName) = openerSequence[OpenerStep];
 
         if (!IsActionEnabledInSettings(actionId))
         {
             OpenerStep++;
+            openerStepStart = DateTime.Now;
             return;
         }
 
@@ -385,8 +400,22 @@ public class MachinistRotation : IDisposable
         var actionManager = ActionManager.Instance();
         if (actionManager == null) return;
 
+        // Skip opener steps that stay unusable for too long (eg, cooldown/locked)
+        openerStepStart = openerStepStart == DateTime.MinValue ? DateTime.Now : openerStepStart;
+        var stuckOnStep = DateTime.Now - openerStepStart > TimeSpan.FromSeconds(3);
+        var actionStatus = actionManager->GetActionStatus(ActionType.Action, actionId);
+        var actionUsable = actionStatus == 0;
+
+        if (!actionUsable && stuckOnStep)
+        {
+            Plugin.Log.Warning($"Skipping opener action {actionName} - unusable for 3+ seconds (status {actionStatus})");
+            OpenerStep++;
+            openerStepStart = DateTime.Now;
+            return;
+        }
+
         // Check if ready and use
-        if (actionManager->GetActionStatus(ActionType.Action, actionId) == 0)
+        if (actionUsable)
         {
             if (actionManager->UseAction(ActionType.Action, actionId, targetId))
             {
@@ -394,6 +423,7 @@ public class MachinistRotation : IDisposable
                 lastActionTime = DateTime.Now;
                 if (!isOGcd) lastGcdTime = DateTime.Now;
                 OpenerStep++;
+                openerStepStart = DateTime.Now;
                 RotationStatus = $"Opener {OpenerStep}/{openerSequence.Count}";
                 Plugin.Log.Information($"Opener: {actionName}");
             }
