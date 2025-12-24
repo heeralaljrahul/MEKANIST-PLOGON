@@ -124,6 +124,48 @@ public class MachinistWindow : Window, IDisposable
                 ImGui.TextColored(new Vector4(1.0f, 0.5f, 0.5f, 1.0f), "No target - Select an enemy first!");
             }
 
+            ImGuiHelpers.ScaledDummy(5.0f);
+
+            // Start/Stop rotation controls
+            var startStopSize = new Vector2(130, 32);
+            if (!rotation.IsEnabled)
+            {
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.2f, 0.7f, 0.3f, 1.0f));
+                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.25f, 0.85f, 0.35f, 1.0f));
+                if (ImGui.Button("Start Rotation", startStopSize))
+                {
+                    var started = rotation.StartRotation(true, Settings.AutoTargetNearest);
+                    lastActionResult = started ? "Rotation started" : "No valid target found";
+                    lastActionTime = DateTime.Now;
+                }
+                ImGui.PopStyleColor(2);
+            }
+            else
+            {
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.7f, 0.2f, 0.2f, 1.0f));
+                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.85f, 0.25f, 0.25f, 1.0f));
+                if (ImGui.Button("Stop Rotation", startStopSize))
+                {
+                    rotation.StopRotation();
+                    lastActionResult = "Rotation stopped";
+                    lastActionTime = DateTime.Now;
+                }
+                ImGui.PopStyleColor(2);
+
+                ImGui.SameLine();
+                if (rotation.IsInOpener)
+                {
+                    ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.6f, 0.4f, 0.1f, 1.0f));
+                    if (ImGui.Button("Skip Opener", new Vector2(110, 32)))
+                    {
+                        rotation.ResetOpener();
+                        lastActionResult = "Opener skipped";
+                        lastActionTime = DateTime.Now;
+                    }
+                    ImGui.PopStyleColor();
+                }
+            }
+
             ImGuiHelpers.ScaledDummy(8.0f);
 
             // Big combo start buttons
@@ -154,34 +196,6 @@ public class MachinistWindow : Window, IDisposable
                 ImGui.SetTooltip("Pressing any combo button will:\n1. Execute that ability on your selected target\n2. Auto-start the rotation to continue attacking");
 
             ImGuiHelpers.ScaledDummy(5.0f);
-
-            // Control buttons
-            if (rotation.IsEnabled)
-            {
-                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.7f, 0.2f, 0.2f, 1.0f));
-                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.8f, 0.3f, 0.3f, 1.0f));
-                if (ImGui.Button("Stop Rotation", new Vector2(120, 30)))
-                {
-                    rotation.StopRotation();
-                    lastActionResult = "Rotation stopped";
-                    lastActionTime = DateTime.Now;
-                }
-                ImGui.PopStyleColor(2);
-
-                ImGui.SameLine();
-
-                if (rotation.IsInOpener)
-                {
-                    ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.6f, 0.4f, 0.1f, 1.0f));
-                    if (ImGui.Button("Skip Opener", new Vector2(100, 30)))
-                    {
-                        rotation.ResetOpener();
-                        lastActionResult = "Opener skipped";
-                        lastActionTime = DateTime.Now;
-                    }
-                    ImGui.PopStyleColor();
-                }
-            }
 
             // Rotation info
             if (rotation.IsEnabled)
@@ -424,6 +438,17 @@ public class MachinistWindow : Window, IDisposable
 
         using (ImRaii.PushIndent(10f))
         {
+            var autoTarget = Settings.AutoTargetNearest;
+            if (ImGui.Checkbox("Auto-target nearest enemy while rotation is running", ref autoTarget))
+            {
+                Settings.AutoTargetNearest = autoTarget;
+                plugin.Configuration.Save();
+                lastActionResult = autoTarget ? "Auto-target enabled" : "Auto-target disabled";
+                lastActionTime = DateTime.Now;
+            }
+
+            ImGuiHelpers.ScaledDummy(5.0f);
+
             if (ImGui.Button("Target Nearest Enemy", new Vector2(160, 28)))
             {
                 TargetNearestEnemy();
@@ -532,15 +557,8 @@ public class MachinistWindow : Window, IDisposable
             return;
         }
 
-        var nearestEnemy = Plugin.ObjectTable
-            .OfType<IBattleNpc>()
-            .Where(o => o.BattleNpcKind == BattleNpcSubKind.Enemy && IsTargetable(o))
-            .OrderBy(o => Vector3.Distance(localPlayer.Position, o.Position))
-            .FirstOrDefault();
-
-        if (nearestEnemy != null)
+        if (rotation.TargetNearestEnemy(out var nearestEnemy) && nearestEnemy != null)
         {
-            Plugin.TargetManager.Target = nearestEnemy;
             var distance = Vector3.Distance(localPlayer.Position, nearestEnemy.Position);
             lastActionResult = $"Targeted: {nearestEnemy.Name} ({distance:F0}y)";
         }
@@ -596,7 +614,7 @@ public class MachinistWindow : Window, IDisposable
             lastActionResult = $"Started combo with {actionName} on {target.Name}";
 
             // Auto-start the rotation
-            rotation.OnComboButtonPressed();
+            rotation.StartRotation(false, Settings.AutoTargetNearest);
         }
         else
         {

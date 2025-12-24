@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
+using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -104,15 +107,35 @@ public class MachinistRotation : IDisposable
 
     public void OnComboButtonPressed()
     {
-        if (!IsEnabled)
+        StartRotation(false);
+    }
+
+    public bool StartRotation(bool allowOpener = true, bool allowAutoTarget = true)
+    {
+        if (IsEnabled)
+            return true;
+
+        if (!EnsureTarget(allowAutoTarget))
+            return false;
+
+        IsEnabled = true;
+
+        if (allowOpener && Settings.UseOpener)
         {
-            IsEnabled = true;
-            if (Settings.UseOpener)
-                StartOpener();
-            else
-                RotationStatus = "Running";
-            Plugin.Log.Information("Auto-rotation started");
+            StartOpener();
         }
+        else
+        {
+            ResetOpener();
+            RotationStatus = "Running";
+        }
+
+        // Ensure we are not throttled on start
+        lastActionTime = DateTime.Now.AddSeconds(-2);
+        lastGcdTime = DateTime.Now.AddSeconds(-2);
+
+        Plugin.Log.Information("Auto-rotation started");
+        return true;
     }
 
     public void StartOpener()
@@ -147,13 +170,12 @@ public class MachinistRotation : IDisposable
         // Read game state
         ReadGameState();
 
-        var target = Plugin.TargetManager.Target;
-        if (target == null || target is not IBattleChara battleTarget || battleTarget.IsDead)
-        {
-            RotationStatus = "No Target";
-            NextAction = "Select target...";
+        if (!EnsureTarget(Settings.AutoTargetNearest))
             return;
-        }
+
+        var target = Plugin.TargetManager.Target as IBattleChara;
+        if (target == null)
+            return;
 
         // Throttle to prevent spam
         var timeSinceAction = (float)(DateTime.Now - lastActionTime).TotalSeconds;
@@ -164,6 +186,62 @@ public class MachinistRotation : IDisposable
             ExecuteOpener(target.GameObjectId);
         else
             ExecuteRotation(target.GameObjectId);
+    }
+
+    public bool TargetNearestEnemy(out IBattleChara? target)
+    {
+        target = FindNearestEnemy();
+        if (target != null)
+        {
+            Plugin.TargetManager.Target = target;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool EnsureTarget(bool allowAutoTarget)
+    {
+        var target = Plugin.TargetManager.Target;
+
+        if (IsValidTarget(target))
+            return true;
+
+        if (allowAutoTarget && TargetNearestEnemy(out var newTarget) && newTarget != null)
+        {
+            RotationStatus = $"Targeted {newTarget.Name}";
+            return true;
+        }
+
+        RotationStatus = "No Target";
+        NextAction = "Select target...";
+        return false;
+    }
+
+    private IBattleChara? FindNearestEnemy()
+    {
+        var localPlayer = Plugin.ClientState.LocalPlayer;
+        if (localPlayer == null)
+            return null;
+
+        return Plugin.ObjectTable
+            .OfType<IBattleNpc>()
+            .Where(IsTargetableEnemy)
+            .OrderBy(o => Vector3.Distance(localPlayer.Position, o.Position))
+            .FirstOrDefault();
+    }
+
+    private static bool IsTargetableEnemy(IBattleNpc npc)
+    {
+        if (npc.BattleNpcKind != BattleNpcSubKind.Enemy)
+            return false;
+
+        return IsValidTarget(npc);
+    }
+
+    private static bool IsValidTarget(IGameObject? target)
+    {
+        return target is IBattleChara battleTarget && !battleTarget.IsDead && battleTarget.IsTargetable;
     }
 
     private unsafe void ReadGameState()

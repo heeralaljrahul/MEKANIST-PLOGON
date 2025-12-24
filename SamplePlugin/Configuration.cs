@@ -26,6 +26,9 @@ public class MachinistSettings
     // ===== SINGLE TARGET COMBO ABILITIES =====
     // These abilities will be woven into the single-target rotation when enabled
 
+    // Targeting behavior
+    public bool AutoTargetNearest { get; set; } = true;
+
     // Burst GCDs (main damage abilities)
     public bool UseDrill { get; set; } = true;
     public bool UseAirAnchor { get; set; } = true;
