@@ -48,6 +48,7 @@ public class MachinistRotation : IDisposable
     public string LastAction { get; private set; } = "";
     public string NextAction { get; private set; } = "";
     public string RotationStatus { get; private set; } = "Idle";
+    public bool IsTargetingSuppressed { get; private set; }
 
     // Game gauge data
     public int CurrentHeat { get; private set; }
@@ -58,6 +59,9 @@ public class MachinistRotation : IDisposable
     // Combo state from game
     private float comboTimer;
     private uint lastComboAction;
+
+    // Targeting state
+    private bool targetLockout;
 
     // Timing for weaving
     private DateTime lastGcdTime = DateTime.MinValue;
@@ -95,6 +99,34 @@ public class MachinistRotation : IDisposable
         (Ricochet, true, "Ricochet"),
     ];
 
+    // Damage ability checks for readiness validation
+    private readonly (uint ActionId, string Name)[] damageActions =
+    [
+        (Drill, "Drill"),
+        (AirAnchor, "Air Anchor"),
+        (ChainSaw, "Chain Saw"),
+        (Excavator, "Excavator"),
+        (FullMetalField, "Full Metal Field"),
+        (Hypercharge, "Hypercharge"),
+        (HeatBlast, "Heat Blast"),
+        (BlazingShot, "Blazing Shot"),
+        (Wildfire, "Wildfire"),
+        (GaussRound, "Gauss Round"),
+        (DoubleCheck, "Double Check"),
+        (Ricochet, "Ricochet"),
+        (Checkmate, "Checkmate"),
+        (Reassemble, "Reassemble"),
+        (BarrelStabilizer, "Barrel Stabilizer"),
+        (HeatedSplitShot, "Heated Split Shot"),
+        (HeatedSlugShot, "Heated Slug Shot"),
+        (HeatedCleanShot, "Heated Clean Shot"),
+        (SplitShot, "Split Shot"),
+        (SlugShot, "Slug Shot"),
+        (CleanShot, "Clean Shot"),
+        (RookAutoturret, "Rook Autoturret"),
+        (AutomatonQueen, "Automaton Queen"),
+    ];
+
     public MachinistRotation()
     {
         Plugin.Framework.Update += OnFrameworkUpdate;
@@ -115,8 +147,13 @@ public class MachinistRotation : IDisposable
         if (IsEnabled)
             return true;
 
+        targetLockout = false;
+        IsTargetingSuppressed = false;
+
         if (!EnsureTarget(allowAutoTarget))
             return false;
+
+        UpdateDamageReadinessPreview();
 
         IsEnabled = true;
 
@@ -146,13 +183,51 @@ public class MachinistRotation : IDisposable
         Plugin.Log.Information("Opener started");
     }
 
-    public void StopRotation()
+    public void StopRotation(bool clearTarget = false)
     {
         IsEnabled = false;
         IsInOpener = false;
         OpenerStep = 0;
-        RotationStatus = "Stopped";
-        Plugin.Log.Information("Rotation stopped");
+
+        targetLockout = clearTarget;
+        IsTargetingSuppressed = clearTarget;
+
+        if (clearTarget)
+        {
+            Plugin.TargetManager.Target = null;
+            RotationStatus = "Stopped (target cleared)";
+            NextAction = "Target cleared";
+        }
+        else
+        {
+            RotationStatus = "Stopped";
+        }
+
+        Plugin.Log.Information(clearTarget
+            ? "Rotation stopped and target cleared"
+            : "Rotation stopped");
+    }
+
+    public bool ContinueRotation(bool allowAutoTarget)
+    {
+        targetLockout = false;
+        IsTargetingSuppressed = false;
+
+        if (!EnsureTarget(allowAutoTarget))
+            return false;
+
+        UpdateDamageReadinessPreview();
+
+        IsEnabled = true;
+        ResetOpener();
+
+        // Ensure we are not throttled on resume
+        lastActionTime = DateTime.Now.AddSeconds(-2);
+        lastGcdTime = DateTime.Now.AddSeconds(-2);
+
+        RotationStatus = "Running";
+        Plugin.Log.Information("Auto-rotation continued");
+        return true;
     }
 
     public void ResetOpener()
@@ -177,9 +252,11 @@ public class MachinistRotation : IDisposable
         if (target == null)
             return;
 
-        // Throttle to prevent spam
+        UpdateDamageReadinessPreview();
+
+        // Throttle to prevent spam (tighter window for responsiveness)
         var timeSinceAction = (float)(DateTime.Now - lastActionTime).TotalSeconds;
-        if (timeSinceAction < 0.05f)
+        if (timeSinceAction < 0.03f)
             return;
 
         if (IsInOpener)
@@ -202,6 +279,13 @@ public class MachinistRotation : IDisposable
 
     private bool EnsureTarget(bool allowAutoTarget)
     {
+        if (targetLockout)
+        {
+            RotationStatus = "Targeting paused";
+            NextAction = "Press Continue Combo";
+            return false;
+        }
+
         var target = Plugin.TargetManager.Target;
 
         if (IsValidTarget(target))
@@ -448,6 +532,28 @@ public class MachinistRotation : IDisposable
         return am->GetActionStatus(ActionType.Action, actionId) == 0;
     }
 
+    private unsafe void UpdateDamageReadinessPreview()
+    {
+        if (IsInOpener)
+            return;
+
+        var actionManager = ActionManager.Instance();
+        if (actionManager == null)
+            return;
+
+        if (HasReadyDamageAbility(actionManager, out var readyAction))
+        {
+            if (string.IsNullOrEmpty(NextAction))
+                NextAction = readyAction;
+            RotationStatus = IsEnabled ? RotationStatus : "Ready";
+        }
+        else
+        {
+            RotationStatus = "Waiting for damage abilities";
+            NextAction = "All damage actions cooling down";
+        }
+    }
+
     private unsafe bool UseAction(ActionManager* am, uint actionId, ulong targetId, string name, bool isOGcd)
     {
         if (am->UseAction(ActionType.Action, actionId, targetId))
@@ -487,6 +593,24 @@ public class MachinistRotation : IDisposable
             return false;
 
         return abilityEnabled;
+    }
+
+    private unsafe bool HasReadyDamageAbility(ActionManager* am, out string readyAction)
+    {
+        foreach (var (actionId, actionName) in damageActions)
+        {
+            if (!IsActionEnabledInSettings(actionId))
+                continue;
+
+            if (am->GetActionStatus(ActionType.Action, actionId) == 0)
+            {
+                readyAction = actionName;
+                return true;
+            }
+        }
+
+        readyAction = string.Empty;
+        return false;
     }
 
     public string GetNextActionPreview()
